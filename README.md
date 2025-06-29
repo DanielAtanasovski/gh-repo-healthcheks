@@ -12,19 +12,23 @@ This tool serves as both a practical utility for monitoring repository health an
 - 🖥️ **Beautiful terminal interface** using `ratatui` with responsive layout
 - ⌨️ **Keyboard navigation** with intuitive controls
 - 🏗️ **Modular architecture** with separation of concerns
-- 🔄 **Refresh functionality** (press `r` - infrastructure ready)
+- 🔄 **Refresh functionality** with GitHub API integration (press `r`)
 - 🚪 **Graceful exit** (press `q` or `Esc`)
 - 📊 **Structured data models** for repositories, workflows, and PRs
 - 🧪 **Comprehensive test coverage** for all modules
+- 🔗 **GitHub API integration** using `octocrab` for real-time data
+- 📈 **Repository monitoring** with pull request counts and activity tracking
+- 🎨 **Color-coded status indicators** (Active/Quiet/Stale)
+- ⚡ **Async architecture** for non-blocking API calls
 
 ### Planned Features
-- 🔗 GitHub API integration for real-time data
 - ✅ CI/CD pipeline status (success, failure, in progress)  
 - 📝 Pull request tracking and review status
 - 🔔 Build failure alerts and notifications
 - ⚙️ Configuration file support (TOML/JSON)
 - 🔄 Auto-refresh capabilities
 - 📊 Historical data and trends
+- 🎯 Repository filtering and selection
 
 ## 🚀 Quick Start
 
@@ -47,7 +51,14 @@ This tool serves as both a practical utility for monitoring repository health an
    cargo build
    ```
 
-3. **Run the application:**
+3. **Set up GitHub token:**
+   ```bash
+   # Create a GitHub Personal Access Token at:
+   # https://github.com/settings/tokens
+   export GH_REPO_HEALTHCHECKS_TOKEN="your_github_token_here"
+   ```
+
+4. **Run the application:**
    ```bash
    cargo run
    ```
@@ -87,8 +98,19 @@ cargo build --release
 ### Current Interface
 The application displays a beautiful three-panel layout:
 - **Header**: Application title and refresh status
-- **Content**: Repository dashboard (currently showing placeholder content)
+- **Content**: Repository table with real GitHub data showing:
+  - Repository names
+  - Open pull request counts (color-coded)
+  - Last activity dates
+  - Language and star information
+  - Status indicators (Active/Quiet/Stale)
 - **Footer**: Available keyboard shortcuts
+
+### Status Indicators
+
+- **🟢 Active**: Repository has open pull requests
+- **🟡 Quiet**: Repository has recent activity but no open PRs  
+- **🔴 Stale**: Repository has no recent activity
 
 ## 🏗️ Architecture
 
@@ -104,7 +126,7 @@ src/
 ├── events.rs            # ✅ Event handling and input processing
 ├── terminal.rs          # ✅ Terminal setup and lifecycle management
 ├── models.rs            # ✅ Data structures and business logic
-├── github.rs            # 🔄 GitHub API integration (planned)
+├── github.rs            # ✅ GitHub API integration using octocrab
 └── config.rs            # 🔄 Configuration management (planned)
 ```
 
@@ -139,6 +161,12 @@ src/
 - Repository and workflow models
 - Status enums and state management
 - Configuration structures
+
+#### `github.rs` - GitHub Integration  
+- GitHub API client using octocrab
+- Repository data fetching
+- Pull request and activity monitoring
+- Authentication and error handling
 
 ### Design Principles
 
@@ -175,18 +203,19 @@ src/
 
 ## 🔮 Planned Implementation
 
-### Phase 1: Enhanced UI ✅ (Current)
+### Phase 1: Enhanced UI ✅ (Completed)
 - [x] Modular architecture
 - [x] Beautiful terminal interface  
 - [x] Event handling system
 - [x] Comprehensive data models
 - [x] Test coverage
 
-### Phase 2: Data Integration (In Progress)
-- [ ] GitHub API client with authentication
-- [ ] Configuration file loading (repos.toml)
-- [ ] Real repository data display
-- [ ] Error handling and retry logic
+### Phase 2: Data Integration ✅ (Completed)
+- [x] GitHub API client with authentication
+- [x] Real repository data display
+- [x] Pull request monitoring
+- [x] Activity tracking
+- [x] Error handling and retry logic
 
 ### Phase 3: Advanced Features
 - [ ] Real-time status updates
@@ -199,9 +228,18 @@ src/
 
 ### Environment Variables
 ```env
-# .env file
-GITHUB_TOKEN=ghp_your_personal_access_token_here
+# Set your GitHub token (required)
+export GH_REPO_HEALTHCHECKS_TOKEN="ghp_your_personal_access_token_here"
 ```
+
+### GitHub Token Setup
+1. Go to https://github.com/settings/tokens
+2. Click "Generate new token" → "Generate new token (classic)"
+3. Select scopes:
+   - `repo` (for private repositories)
+   - `public_repo` (for public repositories only)
+4. Copy the generated token
+5. Set the environment variable before running the app
 
 ### Repository Configuration
 ```toml
@@ -223,11 +261,10 @@ display_name = "Billing API"
 ### Core Libraries
 - **`ratatui`** - Terminal UI framework with excellent layout system
 - **`crossterm`** - Cross-platform terminal manipulation
-- **Future additions**:
-  - `reqwest` - HTTP client for GitHub API
-  - `tokio` - Async runtime for concurrent operations
-  - `serde` - Serialization for configuration and API responses
-  - `toml` - Configuration file parsing
+- **`octocrab`** - GitHub API client for Rust
+- **`tokio`** - Async runtime for concurrent operations
+- **`serde`** - Serialization for API responses
+- **`chrono`** - Date and time handling
 
 ### Development Tools
 - **`cargo`** - Build system and package manager

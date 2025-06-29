@@ -1,5 +1,6 @@
 mod app;
 mod events;
+mod github;
 mod models;
 mod terminal;
 mod ui;
@@ -15,10 +16,11 @@ use std::error::Error;
 ///
 /// This function sets up the terminal environment, initializes the TUI,
 /// runs the main application loop, and handles cleanup when exiting.
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the terminal and run the app
     let mut terminal = TerminalManager::setup()?;
-    let result = run_app(&mut terminal);
+    let result = run_app(&mut terminal).await;
 
     // Clean up terminal state before exiting
     TerminalManager::cleanup(&mut terminal)?;
@@ -38,12 +40,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// - Processing events (keyboard input, terminal resize, etc.)
 /// - Rendering the UI on each frame
 /// - Graceful exit when requested
-fn run_app(
+async fn run_app(
     terminal: &mut ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
 ) -> Result<(), Box<dyn Error>> {
     // Initialize application state
     let mut app = App::new();
     let event_handler = EventHandler::new();
+
+    // Fetch initial repository data
+    if let Err(e) = app.fetch_repositories().await {
+        eprintln!("Failed to fetch initial repositories: {}", e);
+    }
 
     // Main event loop
     loop {
@@ -52,13 +59,20 @@ fn run_app(
             UI::render(frame, &app);
         })?;
 
-        // Check for and handle events
+        // Check for and handle events with a timeout to allow async operations
         if let Some(event) = event_handler.next_event()? {
             // Handle the event based on its type
             match event {
                 events::AppEvent::Key(key_event) => {
-                    // Let the app handle the key event
-                    app.handle_key_event(key_event.code);
+                    if event.is_refresh() {
+                        // Refresh repositories
+                        if let Err(e) = app.fetch_repositories().await {
+                            eprintln!("Failed to refresh repositories: {}", e);
+                        }
+                    } else {
+                        // Let the app handle other key events
+                        app.handle_key_event(key_event.code);
+                    }
                 }
                 events::AppEvent::Resize(_width, _height) => {
                     // Terminal was resized - the next draw will handle the new size
@@ -74,6 +88,9 @@ fn run_app(
         if app.should_quit() {
             break;
         }
+
+        // Small sleep to prevent 100% CPU usage
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
     Ok(())

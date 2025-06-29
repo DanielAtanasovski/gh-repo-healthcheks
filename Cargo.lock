@@ -405,6 +405,7 @@ name = "gh-repo-healthchecks"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "crossterm",
  "octocrab",
  "ratatui",
  "serde",

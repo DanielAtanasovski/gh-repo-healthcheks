@@ -1,18 +1,16 @@
-use ratatui::{
-    prelude::*,
-    widgets::*,
-};
 use crate::app::{App, AppView};
+use ratatui::{prelude::*, widgets::*};
+use std::time::Duration;
 
 /// Main UI renderer
-/// 
+///
 /// This module handles all UI rendering logic, keeping it separate from
 /// the application state and main event loop.
 pub struct UI;
 
 impl UI {
     /// Render the main application UI
-    /// 
+    ///
     /// This function determines which view to render based on the app state
     /// and delegates to the appropriate rendering function.
     pub fn render(frame: &mut Frame, app: &App) {
@@ -23,130 +21,302 @@ impl UI {
             // AppView::RepoDetails => Self::render_repo_details(frame, app),
         }
     }
-    
+
     /// Render the main dashboard view
-    /// 
+    ///
     /// This creates the primary layout with:
     /// - Header with title and status
     /// - Main content area (repository list)
     /// - Footer with key bindings
     fn render_dashboard(frame: &mut Frame, app: &App) {
         let area = frame.area();
-        
+
         // Create the main layout: header, content, footer
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),    // Header
-                Constraint::Min(0),       // Content (flexible)
-                Constraint::Length(3),    // Footer
+                Constraint::Length(3), // Header
+                Constraint::Min(0),    // Content (flexible)
+                Constraint::Length(3), // Footer
             ])
             .split(area);
-        
+
         // Render each section
         Self::render_header(frame, main_layout[0], app);
         Self::render_content(frame, main_layout[1], app);
         Self::render_footer(frame, main_layout[2]);
     }
-    
+
     /// Render the header section
-    /// 
+    ///
     /// Shows the application title and status information
     fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         let title_text = if let Some(last_refresh) = app.last_refresh {
             let elapsed = last_refresh.elapsed();
-            format!("{} — Last Refresh: {}s ago", 
-                   app.get_title(), 
-                   elapsed.as_secs())
+            format!(
+                "{} — Last Refresh: {}s ago",
+                app.get_title_with_stats(),
+                elapsed.as_secs()
+            )
         } else {
-            format!("{} — Press 'r' to refresh", app.get_title())
+            app.get_title_with_stats().to_string()
         };
-        
+
         let header = Block::default()
             .title(title_text)
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
             .style(Style::default().bg(Color::Black));
-        
+
         frame.render_widget(header, area);
     }
-    
+
     /// Render the main content area
-    /// 
-    /// Currently shows a placeholder. Future: Repository table with status indicators
-    fn render_content(frame: &mut Frame, area: Rect, _app: &App) {
-        // Create inner area with padding
-        let inner_area = area.inner(Margin::new(1, 1));
-        
-        // Placeholder content - future: repository list table
-        let placeholder_text = vec![
-            Line::from("📊 Repository Health Dashboard"),
-            Line::from(""),
-            Line::from("🔄 Press 'r' to refresh data"),
-            Line::from("❌ No repositories configured yet"),
-            Line::from(""),
-            Line::from("Future features:"),
-            Line::from("  • GitHub API integration"),
-            Line::from("  • CI/CD status monitoring"),
-            Line::from("  • Pull request tracking"),
-            Line::from("  • Real-time updates"),
-        ];
-        
-        let content = Paragraph::new(placeholder_text)
-            .style(Style::default().fg(Color::White))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true });
-        
+    ///
+    /// Shows repository list with status indicators
+    fn render_content(frame: &mut Frame, area: Rect, app: &App) {
         let content_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Gray))
-            .title("Dashboard")
+            .title("Repositories")
             .title_alignment(Alignment::Left);
-        
+
         frame.render_widget(content_block, area);
-        frame.render_widget(content, inner_area);
+
+        // Create inner area with padding
+        let inner_area = area.inner(Margin::new(1, 1));
+
+        if app.is_loading() {
+            // Show loading indicator
+            let loading_text = vec![
+                Line::from(""),
+                Line::from("� Loading repositories..."),
+                Line::from(""),
+                Line::from("This may take a moment while we fetch data from GitHub."),
+            ];
+
+            let loading = Paragraph::new(loading_text)
+                .style(Style::default().fg(Color::Yellow))
+                .alignment(Alignment::Center);
+
+            frame.render_widget(loading, inner_area);
+        } else if let Some(error) = app.get_error_message() {
+            // Show error message
+            let error_text = vec![
+                Line::from(""),
+                Line::from("❌ Error loading repositories"),
+                Line::from(""),
+                Line::from(error),
+                Line::from(""),
+                Line::from("Press 'r' to retry"),
+            ];
+
+            let error_paragraph = Paragraph::new(error_text)
+                .style(Style::default().fg(Color::Red))
+                .alignment(Alignment::Center);
+
+            frame.render_widget(error_paragraph, inner_area);
+        } else if app.repository_count() == 0 {
+            // Show empty state
+            let empty_text = vec![
+                Line::from(""),
+                Line::from("📂 No repositories found"),
+                Line::from(""),
+                Line::from("Make sure your GitHub token has access to repositories."),
+                Line::from(""),
+                Line::from("Press 'r' to refresh"),
+            ];
+
+            let empty = Paragraph::new(empty_text)
+                .style(Style::default().fg(Color::DarkGray))
+                .alignment(Alignment::Center);
+
+            frame.render_widget(empty, inner_area);
+        } else {
+            // Show repository table
+            Self::render_repository_table(frame, inner_area, app);
+        }
     }
-    
+
     /// Render the footer section
-    /// 
+    ///
     /// Shows available key bindings and controls
     fn render_footer(frame: &mut Frame, area: Rect) {
         let footer_text = Line::from(vec![
-            Span::styled("[r] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[r] ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Refresh  "),
-            Span::styled("[q] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[q] ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Quit  "),
-            Span::styled("[↑↓] ", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)),
-            Span::raw("Navigate (future)"),
+            Span::styled(
+                "[↑↓] ",
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Navigate"),
         ]);
-        
+
         let footer = Paragraph::new(footer_text)
             .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Gray))
+                    .border_style(Style::default().fg(Color::Gray)),
             );
-        
+
         frame.render_widget(footer, area);
     }
 }
 
+impl UI {
+    /// Render the repository table with actual data
+    fn render_repository_table(frame: &mut Frame, area: Rect, app: &App) {
+        let repositories = app.get_repositories();
+
+        if repositories.is_empty() {
+            return;
+        }
+
+        // Create table headers
+        let header = Row::new(vec![
+            Cell::from("Repository").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("PRs").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Last Activity").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Info").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Status").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+
+        // Create table rows from repository data
+        let rows: Vec<Row> = repositories
+            .iter()
+            .enumerate()
+            .map(|(index, repo)| {
+                // Format pull request count
+                let pr_count = if repo.open_pull_requests.is_empty() {
+                    "0".to_string()
+                } else {
+                    repo.open_pull_requests.len().to_string()
+                };
+
+                // Format last commit date - use actual commit data now
+                let last_activity = if let Some(commit_time) = repo.latest_commit_at {
+                    let duration = commit_time.elapsed().unwrap_or(Duration::from_secs(0));
+                    let days_ago = duration.as_secs() / 86400; // seconds in a day
+                    if days_ago == 0 {
+                        "Today".to_string()
+                    } else if days_ago == 1 {
+                        "1 day ago".to_string()
+                    } else if days_ago < 7 {
+                        format!("{} days ago", days_ago)
+                    } else {
+                        format!("{} weeks ago", days_ago / 7)
+                    }
+                } else {
+                    "No commits".to_string()
+                };
+
+                // Format repository language and stars info
+                let info = match (&repo.language, repo.stars) {
+                    (Some(lang), stars) if stars > 0 => format!("{} ({} ⭐)", lang, stars),
+                    (Some(lang), _) => lang.clone(),
+                    (None, stars) if stars > 0 => format!("{} ⭐", stars),
+                    _ => "N/A".to_string(),
+                };
+
+                // Determine status based on PR count and activity
+                let (status_text, status_color) = if !repo.open_pull_requests.is_empty() {
+                    ("Active", Color::Green)
+                } else if repo.latest_workflow.is_some() {
+                    ("Quiet", Color::Yellow)
+                } else {
+                    ("Stale", Color::Red)
+                };
+
+                // Apply selection highlighting
+                let row_style = if app.selected_repository == index {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+
+                Row::new(vec![
+                    Cell::from(repo.name.as_str()),
+                    Cell::from(pr_count).style(Style::default().fg(
+                        if repo.open_pull_requests.is_empty() {
+                            Color::Gray
+                        } else {
+                            Color::Green
+                        },
+                    )),
+                    Cell::from(last_activity),
+                    Cell::from(info),
+                    Cell::from(status_text).style(Style::default().fg(status_color)),
+                ])
+                .style(row_style)
+            })
+            .collect();
+
+        // Create the table widget
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Percentage(35), // Repository name
+                Constraint::Percentage(10), // PR count
+                Constraint::Percentage(20), // Last activity
+                Constraint::Percentage(20), // Info
+                Constraint::Percentage(15), // Status
+            ],
+        )
+        .header(header)
+        .block(Block::default().borders(Borders::NONE))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol(">> ");
+
+        frame.render_widget(table, area);
+    }
+}
+
 /// Future: Repository table rendering
-/// 
+///
 /// This will be used to render the repository list with status indicators
 #[allow(dead_code)]
-fn render_repository_table(frame: &mut Frame, area: Rect) {
+fn render_repository_table_old(frame: &mut Frame, area: Rect) {
     // Future implementation:
     // - Create table with columns: Repository, Last PR, CI Status, Last Run
     // - Add status indicators with colors
     // - Handle selection and scrolling
-    
-    let placeholder = Block::default()
-        .title("Repositories")
-        .borders(Borders::ALL);
-    
+
+    let placeholder = Block::default().title("Repositories").borders(Borders::ALL);
+
     frame.render_widget(placeholder, area);
 }
 
@@ -160,11 +330,11 @@ mod tests {
         // This is a basic smoke test to ensure UI rendering doesn't panic
         // More comprehensive UI tests would require a mock terminal
         let app = App::new();
-        
+
         // We can't easily test the actual rendering without a terminal,
         // but we can test that our UI struct can be created
         let _ui = UI;
-        
+
         // Verify app state is as expected
         assert!(!app.should_quit());
         assert_eq!(app.current_view, AppView::Dashboard);

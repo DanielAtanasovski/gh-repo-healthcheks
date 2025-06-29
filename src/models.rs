@@ -23,7 +23,7 @@ impl RepositoryStatus {
             RepositoryStatus::Unknown => "Status unknown",
         }
     }
-    
+
     /// Get an emoji representation of the status
     pub fn emoji(&self) -> &'static str {
         match self {
@@ -61,7 +61,7 @@ impl WorkflowStatus {
             WorkflowStatus::Unknown => "Unknown",
         }
     }
-    
+
     /// Get an emoji representation
     pub fn emoji(&self) -> &'static str {
         match self {
@@ -102,7 +102,7 @@ impl WorkflowRun {
         // For now, just return a placeholder
         "recently".to_string()
     }
-    
+
     /// Check if this workflow run is recent (within last 24 hours)
     pub fn is_recent(&self) -> bool {
         if let Ok(elapsed) = self.created_at.elapsed() {
@@ -180,6 +180,8 @@ pub struct Repository {
     pub language: Option<String>,
     /// Number of stars
     pub stars: u32,
+    /// Latest commit timestamp
+    pub latest_commit_at: Option<SystemTime>,
 }
 
 impl Repository {
@@ -196,32 +198,39 @@ impl Repository {
             description: None,
             language: None,
             stars: 0,
+            latest_commit_at: None,
         }
     }
-    
+
     /// Get the full repository name (owner/name)
     pub fn full_name(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
-    
+
     /// Get a summary of the repository's current state
     pub fn status_summary(&self) -> String {
-        let workflow_status = self.latest_workflow
+        let workflow_status = self
+            .latest_workflow
             .as_ref()
             .map(|w| w.status.description())
             .unwrap_or("No workflows");
-        
+
         let pr_count = self.open_pull_requests.len();
-        
-        format!("{} | {} | {} open PRs", 
-                self.status.description(), 
-                workflow_status, 
-                pr_count)
+
+        format!(
+            "{} | {} | {} open PRs",
+            self.status.description(),
+            workflow_status,
+            pr_count
+        )
     }
-    
+
     /// Check if the repository needs attention
     pub fn needs_attention(&self) -> bool {
-        matches!(self.status, RepositoryStatus::Critical | RepositoryStatus::Warning)
+        matches!(
+            self.status,
+            RepositoryStatus::Critical | RepositoryStatus::Warning
+        )
     }
 }
 
@@ -248,7 +257,7 @@ impl RepositoryConfig {
             display_name: None,
         }
     }
-    
+
     /// Get the display name (uses custom name if set, otherwise repository name)
     pub fn display_name(&self) -> &str {
         self.display_name.as_ref().unwrap_or(&self.name)
@@ -310,7 +319,7 @@ mod tests {
         let config = RepositoryConfig::new("test".to_string(), "org".to_string());
         assert!(config.enabled);
         assert_eq!(config.display_name(), "test");
-        
+
         let mut config_with_display = config.clone();
         config_with_display.display_name = Some("Custom Name".to_string());
         assert_eq!(config_with_display.display_name(), "Custom Name");
