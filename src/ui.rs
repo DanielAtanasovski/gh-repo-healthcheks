@@ -74,7 +74,9 @@ impl UI {
         let mut status_lines = Vec::new();
 
         // Repository count info
-        if app.repositories.is_empty() && !app.is_loading() {
+        if app.is_fetching_organizations {
+            status_lines.push(Line::from("Fetching organizations..."));
+        } else if app.repositories.is_empty() && !app.is_loading() {
             status_lines.push(Line::from("No repositories found"));
         } else if app.is_loading() && app.repositories.is_empty() {
             status_lines.push(Line::from("Loading repositories..."));
@@ -264,7 +266,19 @@ impl UI {
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch Mode  "),
+        ];
+        
+        // Dynamic Tab key description based on organization state
+        if app.is_fetching_organizations {
+            controls.push(Span::raw("Fetching Orgs...  "));
+        } else if app.user_organizations.is_empty() {
+            controls.push(Span::raw("Fetch Orgs  "));
+        } else {
+            let mode_text = format!("Switch Mode ({} orgs)  ", app.user_organizations.len());
+            controls.push(Span::raw(mode_text));
+        }
+        
+        controls.extend_from_slice(&[
             Span::styled(
                 "[q] ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -277,7 +291,7 @@ impl UI {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("Navigate  "),
-        ];
+        ]);
 
         // Add pagination info if we have repositories
         if !app.repositories.is_empty() {

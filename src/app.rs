@@ -30,6 +30,8 @@ pub enum BackgroundMessage {
     },
     /// All repositories have been enhanced with full details
     EnhancementCompleted { repositories: Vec<Repository> },
+    /// Organizations list fetching started
+    OrganizationsFetchStarted,
     /// Organizations list fetched
     OrganizationsFetched { organizations: Vec<String> },
 }
@@ -79,6 +81,9 @@ pub struct App {
 
     /// Enhancement state - true when enhancing repositories with details
     pub is_enhancing: bool,
+
+    /// Organizations fetching state - true when fetching organizations
+    pub is_fetching_organizations: bool,
 
     /// Loading progress information
     pub loading_progress: Option<(usize, usize)>, // (current, total)
@@ -154,6 +159,7 @@ impl App {
             organization_repositories: HashMap::new(),
             is_loading: false,
             is_enhancing: false,
+            is_fetching_organizations: false,
             loading_progress: None,
             enhancement_progress: None,
             error_message,
@@ -360,6 +366,16 @@ impl App {
         self.is_enhancing
     }
 
+    /// Check if organizations are currently being fetched
+    pub fn is_fetching_organizations(&self) -> bool {
+        self.is_fetching_organizations
+    }
+
+    /// Get the number of available organizations
+    pub fn organization_count(&self) -> usize {
+        self.user_organizations.len()
+    }
+
     /// Get the enhancement progress, if available
     pub fn enhancement_progress(&self) -> Option<(usize, usize)> {
         self.enhancement_progress
@@ -548,8 +564,12 @@ impl App {
                         self.enhancement_progress = None;
                         self.last_refresh = Some(std::time::Instant::now());
                     }
+                    BackgroundMessage::OrganizationsFetchStarted => {
+                        self.is_fetching_organizations = true;
+                    }
                     BackgroundMessage::OrganizationsFetched { organizations } => {
                         self.user_organizations = organizations;
+                        self.is_fetching_organizations = false;
                         self.error_message = None;
                         
                         // If the user was trying to cycle but we had no organizations,
@@ -628,6 +648,9 @@ impl App {
     fn fetch_user_organizations(&mut self) {
         if let Some(client) = self.github_client.clone() {
             let sender = self.setup_background_processing();
+            
+            // Send start message immediately
+            let _ = sender.send(BackgroundMessage::OrganizationsFetchStarted);
             
             tokio::spawn(async move {
                 match client.get_user_organizations().await {
