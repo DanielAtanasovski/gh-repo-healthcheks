@@ -1,6 +1,7 @@
 use crate::github::GitHubClient;
 use crate::models::Repository;
 use ratatui::crossterm::event::KeyCode;
+use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -29,6 +30,8 @@ pub enum BackgroundMessage {
     },
     /// All repositories have been enhanced with full details
     EnhancementCompleted { repositories: Vec<Repository> },
+    /// Organizations list fetched
+    OrganizationsFetched { organizations: Vec<String> },
 }
 
 /// Application state and configuration
@@ -56,6 +59,21 @@ pub struct App {
     /// Repository data fetched from GitHub
     pub repositories: Vec<Repository>,
 
+    /// Current repository view mode (Personal/Organizations)
+    pub repo_view_mode: RepositoryViewMode,
+
+    /// List of organizations the user belongs to
+    pub user_organizations: Vec<String>,
+
+    /// Current organization index for cycling (0 = Personal, 1+ = organizations)
+    pub current_org_index: usize,
+
+    /// Cached personal repositories
+    pub personal_repositories: Option<Vec<Repository>>,
+
+    /// Cached organization repositories (org_name -> repositories)
+    pub organization_repositories: std::collections::HashMap<String, Vec<Repository>>,
+
     /// Loading state for async operations
     pub is_loading: bool,
 
@@ -79,6 +97,9 @@ pub struct App {
 
     /// Receiver for background task messages
     pub background_receiver: Option<mpsc::UnboundedReceiver<BackgroundMessage>>,
+
+    /// Repository view mode - personal or organizations
+    pub repository_view_mode: RepositoryViewMode,
 }
 
 /// Different views/screens in the application
@@ -90,6 +111,24 @@ pub enum AppView {
     // Settings,
     // RepoDetails,
     // Help,
+}
+
+/// Different repository view modes
+#[derive(Debug, Clone, PartialEq)]
+pub enum RepositoryViewMode {
+    /// Show user's personal repositories
+    Personal,
+    /// Show repositories from a specific organization
+    Organization(String), // Organization name
+}
+
+impl RepositoryViewMode {
+    pub fn display_name(&self) -> String {
+        match self {
+            RepositoryViewMode::Personal => "Personal".to_string(),
+            RepositoryViewMode::Organization(org) => format!("Org: {}", org),
+        }
+    }
 }
 
 impl App {
@@ -108,6 +147,11 @@ impl App {
             last_refresh: None,
             github_client,
             repositories: Vec::new(),
+            repo_view_mode: RepositoryViewMode::Personal,
+            user_organizations: Vec::new(),
+            current_org_index: 0,
+            personal_repositories: None,
+            organization_repositories: HashMap::new(),
             is_loading: false,
             is_enhancing: false,
             loading_progress: None,
@@ -116,6 +160,7 @@ impl App {
             selected_repository: 0,
             scroll_offset: 0,
             background_receiver: None,
+            repository_view_mode: RepositoryViewMode::Personal,
         }
     }
 
@@ -146,6 +191,12 @@ impl App {
             // Refresh data (future implementation)
             KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::F(5) => {
                 self.refresh();
+                true
+            }
+
+            // Tab - cycle between view modes
+            KeyCode::Tab => {
+                self.cycle_view_mode();
                 true
             }
 
@@ -241,20 +292,16 @@ impl App {
             self.initialize_github_client();
         }
 
-        // Start background fetching if client is available
-        if let Some(client) = self.github_client.clone() {
-            // Clear any existing state
-            self.is_loading = true;
-            self.error_message = None;
-            self.repositories.clear();
-            self.loading_progress = None;
-
-            // Setup background processing channel
-            let sender = self.setup_background_processing();
-
-            // Spawn background task
-            crate::github::GitHubClient::spawn_background_fetch(client, sender);
+        // Clear cache for current mode to force refresh
+        match &self.repo_view_mode {
+            RepositoryViewMode::Personal => self.personal_repositories = None,
+            RepositoryViewMode::Organization(org_name) => {
+                self.organization_repositories.remove(org_name);
+            }
         }
+
+        // Fetch repositories for current mode
+        self.fetch_repositories_for_current_mode();
     }
 
     /// Async method to fetch repository data from GitHub
@@ -452,7 +499,17 @@ impl App {
                         self.loading_progress = Some((current, total));
                     }
                     BackgroundMessage::FetchCompleted { repositories } => {
-                        self.repositories = repositories;
+                        self.repositories = repositories.clone();
+                        // Cache the repositories based on current mode
+                        match &self.repo_view_mode {
+                            RepositoryViewMode::Personal => {
+                                self.personal_repositories = Some(repositories);
+                            }
+                            RepositoryViewMode::Organization(org_name) => {
+                                self.organization_repositories
+                                    .insert(org_name.clone(), repositories);
+                            }
+                        }
                         // We've loaded basic data, but will start enhancing
                         self.is_loading = false;
                         self.loading_progress = None;
@@ -491,6 +548,126 @@ impl App {
                         self.enhancement_progress = None;
                         self.last_refresh = Some(std::time::Instant::now());
                     }
+                    BackgroundMessage::OrganizationsFetched { organizations } => {
+                        self.user_organizations = organizations;
+                        self.error_message = None;
+                        
+                        // If the user was trying to cycle but we had no organizations,
+                        // now we can start cycling
+                        if !self.user_organizations.is_empty() {
+                            // The user will need to press Tab again to start cycling
+                            // This is more predictable than auto-cycling
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cycle between repository view modes
+    pub fn cycle_view_mode(&mut self) {
+        // If we don't have organizations yet and have a GitHub client, try to fetch them first
+        if self.user_organizations.is_empty() && self.github_client.is_some() {
+            self.fetch_user_organizations();
+            // If we still have no organizations, there's nothing to cycle to
+            // so just stay in Personal mode for now
+            return;
+        }
+
+        // If no organizations available (either no GitHub client or no orgs found), 
+        // just stay in Personal mode
+        if self.user_organizations.is_empty() {
+            return;
+        }
+
+        // Cycle through: Personal -> Org1 -> Org2 -> ... -> Personal
+        let total_modes = 1 + self.user_organizations.len(); // 1 for Personal + N orgs
+        self.current_org_index = (self.current_org_index + 1) % total_modes;
+
+        // Update the view mode based on current index
+        self.repo_view_mode = if self.current_org_index == 0 {
+            RepositoryViewMode::Personal
+        } else {
+            let org_name = self.user_organizations[self.current_org_index - 1].clone();
+            RepositoryViewMode::Organization(org_name)
+        };
+
+        // Switch to the new view
+        self.switch_to_current_view();
+
+        // Reset selection and scroll when switching modes
+        self.selected_repository = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Switch to the current view mode
+    fn switch_to_current_view(&mut self) {
+        match &self.repo_view_mode {
+            RepositoryViewMode::Personal => {
+                if let Some(cached_repos) = &self.personal_repositories {
+                    // Use cached data
+                    self.repositories = cached_repos.clone();
+                } else {
+                    // Need to fetch personal repositories
+                    self.fetch_repositories_for_current_mode();
+                }
+            }
+            RepositoryViewMode::Organization(org_name) => {
+                if let Some(cached_repos) = self.organization_repositories.get(org_name) {
+                    // Use cached data
+                    self.repositories = cached_repos.clone();
+                } else {
+                    // Need to fetch organization repositories
+                    self.fetch_repositories_for_current_mode();
+                }
+            }
+        }
+    }
+
+    /// Fetch the list of organizations the user belongs to
+    fn fetch_user_organizations(&mut self) {
+        if let Some(client) = self.github_client.clone() {
+            let sender = self.setup_background_processing();
+            
+            tokio::spawn(async move {
+                match client.get_user_organizations().await {
+                    Ok(orgs) => {
+                        // Send a message to update the organizations list
+                        let _ = sender.send(BackgroundMessage::OrganizationsFetched { organizations: orgs });
+                    }
+                    Err(e) => {
+                        let _ = sender.send(BackgroundMessage::FetchError { 
+                            error: format!("Failed to fetch organizations: {}", e) 
+                        });
+                    }
+                }
+            });
+        }
+    }
+
+    /// Fetch repositories for the current view mode
+    fn fetch_repositories_for_current_mode(&mut self) {
+        if let Some(client) = self.github_client.clone() {
+            // Clear current repositories and show loading
+            self.repositories.clear();
+            self.is_loading = true;
+            self.error_message = None;
+            self.loading_progress = None;
+
+            // Setup background processing channel
+            let sender = self.setup_background_processing();
+
+            // Spawn background task based on current mode
+            match &self.repo_view_mode {
+                RepositoryViewMode::Personal => {
+                    crate::github::GitHubClient::spawn_background_fetch(client, sender);
+                }
+                RepositoryViewMode::Organization(org_name) => {
+                    crate::github::GitHubClient::spawn_background_fetch_organization(
+                        client,
+                        sender,
+                        org_name.clone(),
+                    );
                 }
             }
         }

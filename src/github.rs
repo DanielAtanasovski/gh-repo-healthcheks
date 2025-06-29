@@ -261,10 +261,10 @@ impl GitHubClient {
         // For now, return empty vector as octocrab doesn't have direct workflow support
         // This would need to be implemented with raw HTTP requests to GitHub Actions API
         // or wait for octocrab to add workflow support
-        
+
         // Placeholder implementation - in a real scenario, you'd call:
         // GET /repos/{owner}/{repo}/actions/runs
-        
+
         Ok(Vec::new())
     }
 
@@ -287,11 +287,11 @@ impl GitHubClient {
         tokio::spawn(async move {
             // Phase 1: Fetch basic repository information quickly
             let basic_result = client.list_basic_repositories().await;
-            
+
             match basic_result {
                 Ok(basic_repositories) => {
                     let total = basic_repositories.len();
-                    
+
                     // Send start message
                     if sender
                         .send(BackgroundMessage::FetchStarted { total })
@@ -299,7 +299,7 @@ impl GitHubClient {
                     {
                         return; // Receiver dropped
                     }
-                    
+
                     // Send each basic repository immediately
                     for (i, repository) in basic_repositories.iter().enumerate() {
                         if sender
@@ -313,37 +313,35 @@ impl GitHubClient {
                             return; // Receiver dropped
                         }
                     }
-                    
+
                     // Send initial completion to show the basic list
                     if sender
-                        .send(BackgroundMessage::FetchCompleted { 
-                            repositories: basic_repositories.clone() 
+                        .send(BackgroundMessage::FetchCompleted {
+                            repositories: basic_repositories.clone(),
                         })
                         .is_err()
                     {
                         return; // Receiver dropped
                     }
-                    
+
                     // Phase 2: Enhance repositories with additional data
                     let mut enhanced_repositories = basic_repositories.clone();
-                    
+
                     // Update the UI to show we're enhancing repositories
                     if sender
-                        .send(BackgroundMessage::EnhancementStarted { 
-                            total 
-                        })
+                        .send(BackgroundMessage::EnhancementStarted { total })
                         .is_err()
                     {
                         return; // Receiver dropped
                     }
-                    
+
                     // Enhance each repository with additional details
                     for (i, repo) in enhanced_repositories.iter_mut().enumerate() {
                         // Enhance this repository with additional data
                         if let Err(e) = client.enhance_repository(repo).await {
                             eprintln!("Error enhancing repository {}: {}", repo.name, e);
                         }
-                        
+
                         // Send update for this enhanced repository
                         if sender
                             .send(BackgroundMessage::RepositoryEnhanced {
@@ -355,18 +353,108 @@ impl GitHubClient {
                         {
                             return; // Receiver dropped
                         }
-                        
+
                         // Small delay to allow UI updates and prevent API rate limiting
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
-                    
+
                     // Send final completion message with all enhanced data
-                    let _ = sender.send(BackgroundMessage::EnhancementCompleted { 
-                        repositories: enhanced_repositories 
+                    let _ = sender.send(BackgroundMessage::EnhancementCompleted {
+                        repositories: enhanced_repositories,
                     });
                 }
                 Err(e) => {
                     let error_msg = format!("Failed to fetch repositories: {}", e);
+                    let _ = sender.send(BackgroundMessage::FetchError { error: error_msg });
+                }
+            }
+        });
+    }
+
+    /// Spawn a background task to fetch organization repositories progressively
+    pub fn spawn_background_fetch_organizations(
+        client: GitHubClient,
+        sender: mpsc::UnboundedSender<BackgroundMessage>,
+    ) {
+        tokio::spawn(async move {
+            // Phase 1: Fetch basic organization repository information quickly
+            match client.list_organization_repositories().await {
+                Ok(basic_repositories) => {
+                    let total = basic_repositories.len();
+
+                    // Send start message
+                    if sender
+                        .send(BackgroundMessage::FetchStarted { total })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Send each basic repository immediately
+                    for (i, repository) in basic_repositories.iter().enumerate() {
+                        if sender
+                            .send(BackgroundMessage::RepositoryFetched {
+                                repository: repository.clone(),
+                                current: i + 1,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return; // Receiver dropped
+                        }
+                    }
+
+                    // Send initial completion to show the basic list
+                    if sender
+                        .send(BackgroundMessage::FetchCompleted {
+                            repositories: basic_repositories.clone(),
+                        })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Phase 2: Enhance repositories with additional data
+                    let mut enhanced_repositories = basic_repositories.clone();
+
+                    // Update the UI to show we're enhancing repositories
+                    if sender
+                        .send(BackgroundMessage::EnhancementStarted { total })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Enhance each repository with additional details
+                    for (i, repo) in enhanced_repositories.iter_mut().enumerate() {
+                        // Enhance this repository with additional data
+                        if let Err(e) = client.enhance_repository(repo).await {
+                            eprintln!("Error enhancing repository {}: {}", repo.name, e);
+                        }
+
+                        // Send update for this enhanced repository
+                        if sender
+                            .send(BackgroundMessage::RepositoryEnhanced {
+                                repository: repo.clone(),
+                                current: i + 1,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return; // Receiver dropped
+                        }
+
+                        // Small delay to allow UI updates and prevent API rate limiting
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+
+                    // Send final completion message with all enhanced data
+                    let _ = sender.send(BackgroundMessage::EnhancementCompleted {
+                        repositories: enhanced_repositories,
+                    });
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to fetch organization repositories: {}", e);
                     let _ = sender.send(BackgroundMessage::FetchError { error: error_msg });
                 }
             }
@@ -378,7 +466,10 @@ impl GitHubClient {
         // Fetch additional data
         match self.fetch_open_pull_requests(&repo.owner, &repo.name).await {
             Ok(open_prs) => repo.open_pull_requests = open_prs,
-            Err(e) => eprintln!("Failed to fetch PRs for {}/{}: {}", repo.owner, repo.name, e),
+            Err(e) => eprintln!(
+                "Failed to fetch PRs for {}/{}: {}",
+                repo.owner, repo.name, e
+            ),
         }
 
         // Fetch latest commit data
@@ -395,7 +486,8 @@ impl GitHubClient {
         match self.fetch_workflow_runs(&repo.owner, &repo.name).await {
             Ok(workflows) => {
                 repo.recent_workflows = workflows.clone();
-                repo.workflow_health = crate::models::WorkflowHealth::from_workflow_runs(&workflows);
+                repo.workflow_health =
+                    crate::models::WorkflowHealth::from_workflow_runs(&workflows);
                 repo.latest_workflow = workflows.first().cloned();
             }
             Err(e) => eprintln!(
@@ -408,6 +500,214 @@ impl GitHubClient {
         repo.status = self.determine_repository_status(&repo);
 
         Ok(())
+    }
+
+    /// List repositories from organizations the user belongs to
+    pub async fn list_organization_repositories(&self) -> Result<Vec<AppRepository>, String> {
+        let mut repositories = Vec::new();
+
+        // First, get the organizations the user belongs to
+        let user_orgs = self.get_user_organizations().await?;
+
+        // For each organization, fetch its repositories
+        for org_name in user_orgs {
+            match self.list_repositories_for_organization(&org_name).await {
+                Ok(mut org_repos) => repositories.append(&mut org_repos),
+                Err(e) => eprintln!("Failed to fetch repositories for org {}: {}", org_name, e),
+            }
+        }
+
+        Ok(repositories)
+    }
+
+    /// Get list of organizations the user belongs to
+    pub async fn get_user_organizations(&self) -> Result<Vec<String>, String> {
+        // Get all repositories the user has access to and extract organization names
+        // This includes organizations where the user is a member
+        let repos_page = self
+            .octocrab
+            .current()
+            .list_repos_for_authenticated_user()
+            .type_("all") // All repositories (owned, member, collaborator)
+            .sort("updated")
+            .per_page(100)
+            .send()
+            .await
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        // Get current user to exclude their personal repositories
+        let user = self
+            .octocrab
+            .current()
+            .user()
+            .await
+            .map_err(|e| format!("Failed to get current user: {}", e))?;
+
+        let user_login = user.login;
+        let mut organizations = std::collections::HashSet::new();
+
+        // Extract unique organization names (excluding user's own repos)
+        for repo in repos_page.items {
+            if let Some(owner) = repo.owner {
+                if owner.login != user_login {
+                    organizations.insert(owner.login);
+                }
+            }
+        }
+
+        // Convert to sorted vector
+        let mut org_vec: Vec<String> = organizations.into_iter().collect();
+        org_vec.sort();
+        Ok(org_vec)
+    }
+
+    /// List repositories for a specific organization
+    pub async fn list_repositories_for_organization(
+        &self,
+        org_name: &str,
+    ) -> Result<Vec<AppRepository>, String> {
+        let mut repositories = Vec::new();
+
+        // Get repositories for the authenticated user that belong to this specific org
+        let repos_page = self
+            .octocrab
+            .current()
+            .list_repos_for_authenticated_user()
+            .type_("all") // All repositories (not just owned)
+            .sort("updated")
+            .per_page(100)
+            .send()
+            .await
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        // Filter for repositories from the specific organization
+        for repo in repos_page.items {
+            let owner = repo
+                .owner
+                .as_ref()
+                .ok_or("Repository missing owner".to_string())?
+                .login
+                .clone();
+
+            // Only include repositories from this specific organization
+            if owner != org_name {
+                continue;
+            }
+
+            let mut app_repo = AppRepository::new(repo.name.clone(), owner.clone());
+
+            // Set basic repository information
+            app_repo.html_url = repo.html_url.map(|url| url.to_string()).unwrap_or_default();
+            app_repo.description = repo.description;
+            app_repo.language = repo
+                .language
+                .and_then(|lang| lang.as_str().map(|s| s.to_string()));
+            app_repo.stars = repo.stargazers_count.unwrap_or(0) as u32;
+            app_repo.last_updated = SystemTime::now();
+
+            // Set default status
+            app_repo.status = RepositoryStatus::Unknown;
+
+            repositories.push(app_repo);
+        }
+
+        Ok(repositories)
+    }
+
+    /// Spawn a background task to fetch repositories for a specific organization
+    pub fn spawn_background_fetch_organization(
+        client: GitHubClient,
+        sender: mpsc::UnboundedSender<BackgroundMessage>,
+        org_name: String,
+    ) {
+        tokio::spawn(async move {
+            // Phase 1: Fetch basic repository information for the specific organization
+            let basic_result = client.list_repositories_for_organization(&org_name).await;
+
+            match basic_result {
+                Ok(basic_repositories) => {
+                    let total = basic_repositories.len();
+
+                    // Send start message
+                    if sender
+                        .send(BackgroundMessage::FetchStarted { total })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Send each basic repository immediately
+                    for (i, repository) in basic_repositories.iter().enumerate() {
+                        if sender
+                            .send(BackgroundMessage::RepositoryFetched {
+                                repository: repository.clone(),
+                                current: i + 1,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return; // Receiver dropped
+                        }
+                    }
+
+                    // Send initial completion to show the basic list
+                    if sender
+                        .send(BackgroundMessage::FetchCompleted {
+                            repositories: basic_repositories.clone(),
+                        })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Phase 2: Enhance repositories with additional data
+                    let mut enhanced_repositories = basic_repositories.clone();
+
+                    // Update the UI to show we're enhancing repositories
+                    if sender
+                        .send(BackgroundMessage::EnhancementStarted { total })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Enhance each repository with additional details
+                    for (i, repo) in enhanced_repositories.iter_mut().enumerate() {
+                        // Enhance this repository with additional data
+                        if let Err(e) = client.enhance_repository(repo).await {
+                            eprintln!("Error enhancing repository {}: {}", repo.name, e);
+                        }
+
+                        // Send update for this enhanced repository
+                        if sender
+                            .send(BackgroundMessage::RepositoryEnhanced {
+                                repository: repo.clone(),
+                                current: i + 1,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return; // Receiver dropped
+                        }
+
+                        // Small delay to allow UI updates and prevent API rate limiting
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+
+                    // Send final completion message with all enhanced data
+                    let _ = sender.send(BackgroundMessage::EnhancementCompleted {
+                        repositories: enhanced_repositories,
+                    });
+                }
+                Err(e) => {
+                    let error_msg = format!(
+                        "Failed to fetch repositories for organization {}: {}",
+                        org_name, e
+                    );
+                    let _ = sender.send(BackgroundMessage::FetchError { error: error_msg });
+                }
+            }
+        });
     }
 }
 

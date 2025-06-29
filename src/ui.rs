@@ -51,8 +51,14 @@ impl UI {
     ///
     /// Shows the application title and status information
     fn render_header(frame: &mut Frame, area: Rect, app: &App) {
+        let title_with_mode = format!(
+            "{} - {}",
+            app.get_title(),
+            app.repo_view_mode.display_name()
+        );
+
         let header_block = Block::default()
-            .title(app.get_title())
+            .title(title_with_mode)
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
@@ -60,13 +66,13 @@ impl UI {
 
         // Create inner area for content
         let inner_area = header_block.inner(area);
-        
+
         // Render the block first
         frame.render_widget(header_block, area);
 
         // Create status text lines
         let mut status_lines = Vec::new();
-        
+
         // Repository count info
         if app.repositories.is_empty() && !app.is_loading() {
             status_lines.push(Line::from("No repositories found"));
@@ -252,6 +258,13 @@ impl UI {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("Refresh  "),
+            Span::styled(
+                "[Tab] ",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Switch Mode  "),
             Span::styled(
                 "[q] ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
