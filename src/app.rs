@@ -1,6 +1,25 @@
 use crate::github::GitHubClient;
 use crate::models::Repository;
 use ratatui::crossterm::event::KeyCode;
+use std::time::Instant;
+use tokio::sync::mpsc;
+
+/// Messages sent from background tasks to the main UI thread
+#[derive(Debug)]
+pub enum BackgroundMessage {
+    /// Repository fetching started with total count
+    FetchStarted { total: usize },
+    /// A single repository was fetched
+    RepositoryFetched {
+        repository: Repository,
+        current: usize,
+        total: usize,
+    },
+    /// All repositories have been fetched
+    FetchCompleted { repositories: Vec<Repository> },
+    /// An error occurred during fetching
+    FetchError { error: String },
+}
 
 /// Application state and configuration
 ///
@@ -30,11 +49,17 @@ pub struct App {
     /// Loading state for async operations
     pub is_loading: bool,
 
+    /// Loading progress information
+    pub loading_progress: Option<(usize, usize)>, // (current, total)
+
     /// Error message if something goes wrong
     pub error_message: Option<String>,
 
     /// Currently selected repository index
     pub selected_repository: usize,
+
+    /// Receiver for background task messages
+    pub background_receiver: Option<mpsc::UnboundedReceiver<BackgroundMessage>>,
 }
 
 /// Different views/screens in the application
@@ -65,8 +90,10 @@ impl App {
             github_client,
             repositories: Vec::new(),
             is_loading: false,
+            loading_progress: None,
             error_message,
             selected_repository: 0,
+            background_receiver: None,
         }
     }
 
@@ -130,16 +157,25 @@ impl App {
             self.initialize_github_client();
         }
 
-        // Mark that we need to fetch data (actual fetching happens in main loop)
-        if self.github_client.is_some() {
+        // Start background fetching if client is available
+        if let Some(client) = self.github_client.clone() {
+            // Clear any existing state
             self.is_loading = true;
             self.error_message = None;
+            self.repositories.clear();
+            self.loading_progress = None;
+
+            // Setup background processing channel
+            let sender = self.setup_background_processing();
+
+            // Spawn background task
+            crate::github::GitHubClient::spawn_background_fetch(client, sender);
         }
     }
 
     /// Async method to fetch repository data from GitHub
     /// This should be called from the main event loop when is_loading is true
-    pub async fn fetch_repositories(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn fetch_repositories(&mut self) -> Result<(), String> {
         if let Some(ref client) = self.github_client {
             self.is_loading = true;
             self.error_message = None;
@@ -245,6 +281,57 @@ impl App {
                 self.repositories.len(),
                 active_count
             )
+        }
+    }
+
+    /// Update loading progress
+    pub fn set_loading_progress(&mut self, current: usize, total: usize) {
+        self.loading_progress = Some((current, total));
+    }
+
+    /// Clear loading progress
+    pub fn clear_loading_progress(&mut self) {
+        self.loading_progress = None;
+    }
+
+    /// Set up background task processing
+    pub fn setup_background_processing(&mut self) -> mpsc::UnboundedSender<BackgroundMessage> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.background_receiver = Some(receiver);
+        sender
+    }
+
+    /// Process any pending background messages
+    pub fn process_background_messages(&mut self) {
+        if let Some(receiver) = &mut self.background_receiver {
+            while let Ok(message) = receiver.try_recv() {
+                match message {
+                    BackgroundMessage::FetchStarted { total } => {
+                        self.is_loading = true;
+                        self.loading_progress = Some((0, total));
+                        self.error_message = None;
+                    }
+                    BackgroundMessage::RepositoryFetched {
+                        repository,
+                        current,
+                        total,
+                    } => {
+                        self.repositories.push(repository);
+                        self.loading_progress = Some((current, total));
+                    }
+                    BackgroundMessage::FetchCompleted { repositories } => {
+                        self.repositories = repositories;
+                        self.is_loading = false;
+                        self.loading_progress = None;
+                        self.last_refresh = Some(std::time::Instant::now());
+                    }
+                    BackgroundMessage::FetchError { error } => {
+                        self.error_message = Some(error);
+                        self.is_loading = false;
+                        self.loading_progress = None;
+                    }
+                }
+            }
         }
     }
 }

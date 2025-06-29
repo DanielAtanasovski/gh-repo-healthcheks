@@ -1,12 +1,14 @@
+use crate::app::BackgroundMessage;
 use crate::models::{
     PullRequest as AppPullRequest, PullRequestState, Repository as AppRepository, RepositoryStatus,
 };
 use octocrab::models::Repository;
 use octocrab::Octocrab;
 use std::time::SystemTime;
+use tokio::sync::mpsc;
 
 /// GitHub API client for fetching repository health data
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GitHubClient {
     octocrab: Octocrab,
 }
@@ -28,9 +30,7 @@ impl GitHubClient {
     ///
     /// This fetches repositories owned by the authenticated user with additional
     /// data about pull requests, latest commits, and releases.
-    pub async fn list_user_repositories(
-        &self,
-    ) -> Result<Vec<AppRepository>, Box<dyn std::error::Error>> {
+    pub async fn list_user_repositories(&self) -> Result<Vec<AppRepository>, String> {
         let mut repositories = Vec::new();
 
         // Get repositories for the authenticated user
@@ -42,11 +42,14 @@ impl GitHubClient {
             .sort("updated") // Sort by last updated
             .per_page(100) // Maximum per page
             .send()
-            .await?;
+            .await
+            .map_err(|e| format!("GitHub API error: {}", e))?;
 
         for repo in repos_page.items {
-            let app_repo = self.convert_repository_with_data(repo).await?;
-            repositories.push(app_repo);
+            match self.convert_repository_with_data(repo).await {
+                Ok(app_repo) => repositories.push(app_repo),
+                Err(e) => eprintln!("Error processing repository: {}", e),
+            }
         }
 
         Ok(repositories)
@@ -56,11 +59,11 @@ impl GitHubClient {
     async fn convert_repository_with_data(
         &self,
         repo: Repository,
-    ) -> Result<AppRepository, Box<dyn std::error::Error>> {
+    ) -> Result<AppRepository, String> {
         let owner = repo
             .owner
             .as_ref()
-            .ok_or("Repository missing owner")?
+            .ok_or("Repository missing owner".to_string())?
             .login
             .clone();
 
@@ -76,12 +79,19 @@ impl GitHubClient {
         app_repo.last_updated = SystemTime::now();
 
         // Fetch additional data
-        let open_prs = self.fetch_open_pull_requests(&owner, &repo.name).await?;
-        app_repo.open_pull_requests = open_prs;
+        match self.fetch_open_pull_requests(&owner, &repo.name).await {
+            Ok(open_prs) => app_repo.open_pull_requests = open_prs,
+            Err(e) => eprintln!("Failed to fetch PRs for {}/{}: {}", owner, repo.name, e),
+        }
 
         // Fetch latest commit data
-        if let Ok(Some(commit_time)) = self.fetch_latest_commit(&owner, &repo.name).await {
-            app_repo.latest_commit_at = Some(commit_time);
+        match self.fetch_latest_commit(&owner, &repo.name).await {
+            Ok(Some(commit_time)) => app_repo.latest_commit_at = Some(commit_time),
+            Ok(None) => {} // No commits found
+            Err(e) => eprintln!(
+                "Failed to fetch latest commit for {}/{}: {}",
+                owner, repo.name, e
+            ),
         }
 
         // Determine overall repository status based on available data
@@ -211,6 +221,57 @@ impl GitHubClient {
     pub async fn get_current_user(&self) -> Result<String, Box<dyn std::error::Error>> {
         let user = self.octocrab.current().user().await?;
         Ok(user.login)
+    }
+
+    /// Spawn a background task to fetch repositories progressively
+    pub fn spawn_background_fetch(
+        client: GitHubClient,
+        sender: mpsc::UnboundedSender<BackgroundMessage>,
+    ) {
+        tokio::spawn(async move {
+            // Convert any errors to strings to avoid Send issues
+            let result = client.list_user_repositories().await;
+
+            match result {
+                Ok(repositories) => {
+                    let total = repositories.len();
+
+                    // Send start message
+                    if sender
+                        .send(BackgroundMessage::FetchStarted { total })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+
+                    // Send each repository progressively
+                    let mut current = 0;
+                    for repository in repositories.iter() {
+                        current += 1;
+                        if sender
+                            .send(BackgroundMessage::RepositoryFetched {
+                                repository: repository.clone(),
+                                current,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return; // Receiver dropped
+                        }
+
+                        // Small delay to allow UI updates
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    }
+
+                    // Send completion message
+                    let _ = sender.send(BackgroundMessage::FetchCompleted { repositories });
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to fetch repositories: {}", e);
+                    let _ = sender.send(BackgroundMessage::FetchError { error: error_msg });
+                }
+            }
+        });
     }
 }
 

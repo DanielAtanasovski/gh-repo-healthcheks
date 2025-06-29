@@ -88,13 +88,47 @@ impl UI {
         let inner_area = area.inner(Margin::new(1, 1));
 
         if app.is_loading() {
-            // Show loading indicator
-            let loading_text = vec![
+            // Show loading indicator with progress
+            let mut loading_text = vec![
                 Line::from(""),
-                Line::from("� Loading repositories..."),
+                Line::from("🔄 Loading repositories..."),
                 Line::from(""),
-                Line::from("This may take a moment while we fetch data from GitHub."),
             ];
+
+            // Add progress information if available
+            if let Some((current, total)) = app.loading_progress {
+                loading_text.push(Line::from(format!(
+                    "Progress: {} / {} repositories",
+                    current, total
+                )));
+
+                // Create a simple progress bar
+                let progress_width = 40;
+                let filled = if total > 0 {
+                    (current * progress_width) / total
+                } else {
+                    0
+                };
+                let empty = progress_width - filled;
+
+                let progress_bar = format!(
+                    "[{}{}] {:.1}%",
+                    "█".repeat(filled),
+                    "░".repeat(empty),
+                    if total > 0 {
+                        (current as f64 / total as f64) * 100.0
+                    } else {
+                        0.0
+                    }
+                );
+
+                loading_text.push(Line::from(""));
+                loading_text.push(Line::from(progress_bar));
+            } else {
+                loading_text.push(Line::from(
+                    "This may take a moment while we fetch data from GitHub.",
+                ));
+            }
 
             let loading = Paragraph::new(loading_text)
                 .style(Style::default().fg(Color::Yellow))

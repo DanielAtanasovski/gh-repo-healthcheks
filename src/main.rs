@@ -47,13 +47,14 @@ async fn run_app(
     let mut app = App::new();
     let event_handler = EventHandler::new();
 
-    // Fetch initial repository data
-    if let Err(e) = app.fetch_repositories().await {
-        eprintln!("Failed to fetch initial repositories: {}", e);
-    }
+    // Trigger initial refresh to start background loading
+    app.refresh();
 
     // Main event loop
     loop {
+        // Process any pending background messages
+        app.process_background_messages();
+
         // Draw the current frame
         terminal.draw(|frame| {
             UI::render(frame, &app);
@@ -65,10 +66,8 @@ async fn run_app(
             match event {
                 events::AppEvent::Key(key_event) => {
                     if event.is_refresh() {
-                        // Refresh repositories
-                        if let Err(e) = app.fetch_repositories().await {
-                            eprintln!("Failed to refresh repositories: {}", e);
-                        }
+                        // Refresh repositories in the background
+                        app.refresh();
                     } else {
                         // Let the app handle other key events
                         app.handle_key_event(key_event.code);
