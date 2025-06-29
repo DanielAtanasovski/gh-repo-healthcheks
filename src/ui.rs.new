@@ -170,7 +170,7 @@ impl UI {
         } else {
             // Show repository table
             Self::render_repository_table(frame, inner_area, app);
-
+            
             // If we're enhancing repositories, show an enhancement indicator in the corner
             if app.is_enhancing {
                 let enhancement_indicator = match app.enhancement_progress {
@@ -179,29 +179,29 @@ impl UI {
                     }
                     None => "Enhancing...".to_string(),
                 };
-
+                
                 // Create a small floating widget for the enhancement status
                 let indicator_height = 3;
                 let indicator_width = enhancement_indicator.len() as u16 + 4;
                 let indicator_x = area.width.saturating_sub(indicator_width);
                 let indicator_y = 0;
-
+                
                 let indicator_area = Rect::new(
                     area.x + indicator_x,
                     area.y + indicator_y,
                     indicator_width,
                     indicator_height,
                 );
-
+                
                 let indicator_widget = Paragraph::new(enhancement_indicator)
                     .style(Style::default().fg(Color::Yellow))
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(Color::Yellow))
-                            .style(Style::default().bg(Color::Black)),
+                            .style(Style::default().bg(Color::Black))
                     );
-
+                
                 frame.render_widget(indicator_widget, indicator_area);
             }
         }
@@ -232,7 +232,7 @@ impl UI {
             ),
             Span::raw("Navigate  "),
         ];
-
+        
         // Add pagination info if we have repositories
         if !app.repositories.is_empty() {
             let page_info = format!(
@@ -246,7 +246,7 @@ impl UI {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ));
-
+            
             // Page up/down controls
             controls.push(Span::styled(
                 "[PgUp/PgDn] ",
@@ -255,7 +255,7 @@ impl UI {
                     .add_modifier(Modifier::BOLD),
             ));
             controls.push(Span::raw("Page  "));
-
+            
             // Home/End controls
             controls.push(Span::styled(
                 "[Home/End] ",
@@ -264,14 +264,15 @@ impl UI {
                     .add_modifier(Modifier::BOLD),
             ));
             controls.push(Span::raw("Top/Bottom"));
-
+            
             // Enhancement status
             if app.is_enhancing {
                 if let Some((current, total)) = app.enhancement_progress {
                     controls.push(Span::raw("  "));
                     controls.push(Span::styled(
                         format!("Enhancing: {}/{}", current, total),
-                        Style::default().fg(Color::Yellow),
+                        Style::default()
+                            .fg(Color::Yellow),
                     ));
                 }
             }
@@ -289,9 +290,7 @@ impl UI {
 
         frame.render_widget(footer, area);
     }
-}
 
-impl UI {
     /// Render the repository table with actual data
     fn render_repository_table(frame: &mut Frame, area: Rect, app: &App) {
         let repositories = app.get_repositories();

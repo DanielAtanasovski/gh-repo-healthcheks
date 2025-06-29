@@ -55,6 +55,53 @@ impl GitHubClient {
         Ok(repositories)
     }
 
+    /// List basic repository information quickly without additional API calls
+    ///
+    /// This is a faster version that only fetches the basic repository list
+    /// without making additional API calls for PRs, commits, etc.
+    pub async fn list_basic_repositories(&self) -> Result<Vec<AppRepository>, String> {
+        let mut repositories = Vec::new();
+
+        // Get repositories for the authenticated user
+        let repos_page = self
+            .octocrab
+            .current()
+            .list_repos_for_authenticated_user()
+            .type_("owner") // Only repositories owned by the user
+            .sort("updated") // Sort by last updated
+            .per_page(100) // Maximum per page
+            .send()
+            .await
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        for repo in repos_page.items {
+            let owner = repo
+                .owner
+                .as_ref()
+                .ok_or("Repository missing owner".to_string())?
+                .login
+                .clone();
+
+            let mut app_repo = AppRepository::new(repo.name.clone(), owner.clone());
+
+            // Set basic repository information
+            app_repo.html_url = repo.html_url.map(|url| url.to_string()).unwrap_or_default();
+            app_repo.description = repo.description;
+            app_repo.language = repo
+                .language
+                .and_then(|lang| lang.as_str().map(|s| s.to_string()));
+            app_repo.stars = repo.stargazers_count.unwrap_or(0) as u32;
+            app_repo.last_updated = SystemTime::now();
+
+            // Set default status
+            app_repo.status = RepositoryStatus::Unknown;
+
+            repositories.push(app_repo);
+        }
+
+        Ok(repositories)
+    }
+
     /// Convert a GitHub repository to our app repository with additional data
     async fn convert_repository_with_data(
         &self,
@@ -229,13 +276,13 @@ impl GitHubClient {
         sender: mpsc::UnboundedSender<BackgroundMessage>,
     ) {
         tokio::spawn(async move {
-            // Convert any errors to strings to avoid Send issues
-            let result = client.list_user_repositories().await;
-
-            match result {
-                Ok(repositories) => {
-                    let total = repositories.len();
-
+            // Phase 1: Fetch basic repository information quickly
+            let basic_result = client.list_basic_repositories().await;
+            
+            match basic_result {
+                Ok(basic_repositories) => {
+                    let total = basic_repositories.len();
+                    
                     // Send start message
                     if sender
                         .send(BackgroundMessage::FetchStarted { total })
@@ -243,28 +290,71 @@ impl GitHubClient {
                     {
                         return; // Receiver dropped
                     }
-
-                    // Send each repository progressively
-                    let mut current = 0;
-                    for repository in repositories.iter() {
-                        current += 1;
+                    
+                    // Send each basic repository immediately
+                    for (i, repository) in basic_repositories.iter().enumerate() {
                         if sender
                             .send(BackgroundMessage::RepositoryFetched {
                                 repository: repository.clone(),
-                                current,
+                                current: i + 1,
                                 total,
                             })
                             .is_err()
                         {
                             return; // Receiver dropped
                         }
-
-                        // Small delay to allow UI updates
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     }
-
-                    // Send completion message
-                    let _ = sender.send(BackgroundMessage::FetchCompleted { repositories });
+                    
+                    // Send initial completion to show the basic list
+                    if sender
+                        .send(BackgroundMessage::FetchCompleted { 
+                            repositories: basic_repositories.clone() 
+                        })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+                    
+                    // Phase 2: Enhance repositories with additional data
+                    let mut enhanced_repositories = basic_repositories.clone();
+                    
+                    // Update the UI to show we're enhancing repositories
+                    if sender
+                        .send(BackgroundMessage::EnhancementStarted { 
+                            total 
+                        })
+                        .is_err()
+                    {
+                        return; // Receiver dropped
+                    }
+                    
+                    // Enhance each repository with additional details
+                    for (i, repo) in enhanced_repositories.iter_mut().enumerate() {
+                        // Enhance this repository with additional data
+                        if let Err(e) = client.enhance_repository(repo).await {
+                            eprintln!("Error enhancing repository {}: {}", repo.name, e);
+                        }
+                        
+                        // Send update for this enhanced repository
+                        if sender
+                            .send(BackgroundMessage::RepositoryEnhanced {
+                                repository: repo.clone(),
+                                current: i + 1,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return; // Receiver dropped
+                        }
+                        
+                        // Small delay to allow UI updates and prevent API rate limiting
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    
+                    // Send final completion message with all enhanced data
+                    let _ = sender.send(BackgroundMessage::EnhancementCompleted { 
+                        repositories: enhanced_repositories 
+                    });
                 }
                 Err(e) => {
                     let error_msg = format!("Failed to fetch repositories: {}", e);
@@ -272,6 +362,30 @@ impl GitHubClient {
                 }
             }
         });
+    }
+
+    /// Enhance a repository with additional data like PRs and commits
+    pub async fn enhance_repository(&self, repo: &mut AppRepository) -> Result<(), String> {
+        // Fetch additional data
+        match self.fetch_open_pull_requests(&repo.owner, &repo.name).await {
+            Ok(open_prs) => repo.open_pull_requests = open_prs,
+            Err(e) => eprintln!("Failed to fetch PRs for {}/{}: {}", repo.owner, repo.name, e),
+        }
+
+        // Fetch latest commit data
+        match self.fetch_latest_commit(&repo.owner, &repo.name).await {
+            Ok(Some(commit_time)) => repo.latest_commit_at = Some(commit_time),
+            Ok(None) => {} // No commits found
+            Err(e) => eprintln!(
+                "Failed to fetch latest commit for {}/{}: {}",
+                repo.owner, repo.name, e
+            ),
+        }
+
+        // Determine overall repository status based on available data
+        repo.status = self.determine_repository_status(&repo);
+
+        Ok(())
     }
 }
 

@@ -15,10 +15,20 @@ pub enum BackgroundMessage {
         current: usize,
         total: usize,
     },
-    /// All repositories have been fetched
+    /// All repositories have been fetched (basic info only)
     FetchCompleted { repositories: Vec<Repository> },
     /// An error occurred during fetching
     FetchError { error: String },
+    /// Enhancement phase started (additional details)
+    EnhancementStarted { total: usize },
+    /// A repository was enhanced with additional details
+    RepositoryEnhanced {
+        repository: Repository,
+        current: usize,
+        total: usize,
+    },
+    /// All repositories have been enhanced with full details
+    EnhancementCompleted { repositories: Vec<Repository> },
 }
 
 /// Application state and configuration
@@ -49,14 +59,23 @@ pub struct App {
     /// Loading state for async operations
     pub is_loading: bool,
 
+    /// Enhancement state - true when enhancing repositories with details
+    pub is_enhancing: bool,
+
     /// Loading progress information
     pub loading_progress: Option<(usize, usize)>, // (current, total)
+
+    /// Enhancement progress information
+    pub enhancement_progress: Option<(usize, usize)>, // (current, total)
 
     /// Error message if something goes wrong
     pub error_message: Option<String>,
 
     /// Currently selected repository index
     pub selected_repository: usize,
+
+    /// Scroll position for the repository list
+    pub scroll_offset: usize,
 
     /// Receiver for background task messages
     pub background_receiver: Option<mpsc::UnboundedReceiver<BackgroundMessage>>,
@@ -90,9 +109,12 @@ impl App {
             github_client,
             repositories: Vec::new(),
             is_loading: false,
+            is_enhancing: false,
             loading_progress: None,
+            enhancement_progress: None,
             error_message,
             selected_repository: 0,
+            scroll_offset: 0,
             background_receiver: None,
         }
     }
@@ -127,14 +149,76 @@ impl App {
                 true
             }
 
-            // Navigation
+            // Navigation - Up arrow
             KeyCode::Up => {
-                self.select_previous_repository();
+                if !self.repositories.is_empty() {
+                    if self.selected_repository > 0 {
+                        self.selected_repository -= 1;
+                        // Auto-scroll to keep selection visible
+                        self.ensure_selected_visible(10); // Assume at least 10 items visible
+                    }
+                }
                 true
             }
 
+            // Navigation - Down arrow
             KeyCode::Down => {
-                self.select_next_repository();
+                if !self.repositories.is_empty() {
+                    if self.selected_repository < self.repositories.len() - 1 {
+                        self.selected_repository += 1;
+                        // Auto-scroll to keep selection visible
+                        self.ensure_selected_visible(10); // Assume at least 10 items visible
+                    }
+                }
+                true
+            }
+
+            // Page Up - scroll up by page
+            KeyCode::PageUp => {
+                if !self.repositories.is_empty() {
+                    // Move selection up by 10 items or to the top
+                    if self.selected_repository >= 10 {
+                        self.selected_repository -= 10;
+                    } else {
+                        self.selected_repository = 0;
+                    }
+                    // Update scroll position
+                    self.ensure_selected_visible(10);
+                }
+                true
+            }
+
+            // Page Down - scroll down by page
+            KeyCode::PageDown => {
+                if !self.repositories.is_empty() {
+                    // Move selection down by 10 items or to the bottom
+                    if self.selected_repository + 10 < self.repositories.len() {
+                        self.selected_repository += 10;
+                    } else {
+                        self.selected_repository = self.repositories.len() - 1;
+                    }
+                    // Update scroll position
+                    self.ensure_selected_visible(10);
+                }
+                true
+            }
+
+            // Home - jump to top
+            KeyCode::Home => {
+                if !self.repositories.is_empty() {
+                    self.selected_repository = 0;
+                    self.scroll_offset = 0;
+                }
+                true
+            }
+
+            // End - jump to bottom
+            KeyCode::End => {
+                if !self.repositories.is_empty() {
+                    self.selected_repository = self.repositories.len() - 1;
+                    // Let ensure_selected_visible handle the scroll
+                    self.ensure_selected_visible(10);
+                }
                 true
             }
 
@@ -224,6 +308,16 @@ impl App {
         self.is_loading
     }
 
+    /// Check if repositories are being enhanced with additional details
+    pub fn is_enhancing(&self) -> bool {
+        self.is_enhancing
+    }
+
+    /// Get the enhancement progress, if available
+    pub fn enhancement_progress(&self) -> Option<(usize, usize)> {
+        self.enhancement_progress
+    }
+
     /// Get the current error message, if any
     pub fn get_error_message(&self) -> Option<&str> {
         self.error_message.as_deref()
@@ -294,6 +388,44 @@ impl App {
         self.loading_progress = None;
     }
 
+    /// Get visible items count based on the area height
+    pub fn get_visible_item_count(&self, area_height: usize) -> usize {
+        // Account for header row
+        if area_height > 1 {
+            area_height - 1
+        } else {
+            0
+        }
+    }
+
+    /// Scroll up in the repository list
+    pub fn scroll_up(&mut self) {
+        if self.scroll_offset > 0 {
+            self.scroll_offset -= 1;
+        }
+    }
+
+    /// Scroll down in the repository list
+    pub fn scroll_down(&mut self, visible_items: usize) {
+        let max_scroll = self.repositories.len().saturating_sub(visible_items);
+        if self.scroll_offset < max_scroll {
+            self.scroll_offset += 1;
+        }
+    }
+
+    /// Ensure the selected repository is visible
+    pub fn ensure_selected_visible(&mut self, visible_items: usize) {
+        // If selected is above viewport, scroll up
+        if self.selected_repository < self.scroll_offset {
+            self.scroll_offset = self.selected_repository;
+        }
+
+        // If selected is below viewport, scroll down
+        if self.selected_repository >= self.scroll_offset + visible_items {
+            self.scroll_offset = self.selected_repository.saturating_sub(visible_items) + 1;
+        }
+    }
+
     /// Set up background task processing
     pub fn setup_background_processing(&mut self) -> mpsc::UnboundedSender<BackgroundMessage> {
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -321,6 +453,7 @@ impl App {
                     }
                     BackgroundMessage::FetchCompleted { repositories } => {
                         self.repositories = repositories;
+                        // We've loaded basic data, but will start enhancing
                         self.is_loading = false;
                         self.loading_progress = None;
                         self.last_refresh = Some(std::time::Instant::now());
@@ -328,7 +461,35 @@ impl App {
                     BackgroundMessage::FetchError { error } => {
                         self.error_message = Some(error);
                         self.is_loading = false;
+                        self.is_enhancing = false;
                         self.loading_progress = None;
+                        self.enhancement_progress = None;
+                    }
+                    BackgroundMessage::EnhancementStarted { total } => {
+                        // We already have basic data and are now enhancing
+                        self.is_enhancing = true;
+                        self.enhancement_progress = Some((0, total));
+                    }
+                    BackgroundMessage::RepositoryEnhanced {
+                        repository,
+                        current,
+                        total,
+                    } => {
+                        // Find and replace the repository with the enhanced version
+                        if let Some(index) = self
+                            .repositories
+                            .iter()
+                            .position(|r| r.name == repository.name)
+                        {
+                            self.repositories[index] = repository;
+                        }
+                        self.enhancement_progress = Some((current, total));
+                    }
+                    BackgroundMessage::EnhancementCompleted { repositories } => {
+                        self.repositories = repositories;
+                        self.is_enhancing = false;
+                        self.enhancement_progress = None;
+                        self.last_refresh = Some(std::time::Instant::now());
                     }
                 }
             }
