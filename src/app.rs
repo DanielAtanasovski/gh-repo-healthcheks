@@ -104,7 +104,7 @@ impl App {
         Self {
             should_quit: false,
             current_view: AppView::Dashboard,
-            title: "🛡️ Team Repo Health Dashboard".to_string(),
+            title: "❤️ Repo Health Dashboard ❤️".to_string(),
             last_refresh: None,
             github_client,
             repositories: Vec::new(),

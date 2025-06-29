@@ -51,25 +51,58 @@ impl UI {
     ///
     /// Shows the application title and status information
     fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-        let title_text = if let Some(last_refresh) = app.last_refresh {
-            let elapsed = last_refresh.elapsed();
-            format!(
-                "{} — Last Refresh: {}s ago",
-                app.get_title_with_stats(),
-                elapsed.as_secs()
-            )
-        } else {
-            app.get_title_with_stats().to_string()
-        };
-
-        let header = Block::default()
-            .title(title_text)
+        let header_block = Block::default()
+            .title(app.get_title())
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
             .style(Style::default().bg(Color::Black));
 
-        frame.render_widget(header, area);
+        // Create inner area for content
+        let inner_area = header_block.inner(area);
+        
+        // Render the block first
+        frame.render_widget(header_block, area);
+
+        // Create status text lines
+        let mut status_lines = Vec::new();
+        
+        // Repository count info
+        if app.repositories.is_empty() && !app.is_loading() {
+            status_lines.push(Line::from("No repositories found"));
+        } else if app.is_loading() && app.repositories.is_empty() {
+            status_lines.push(Line::from("Loading repositories..."));
+        } else {
+            let active_count = app
+                .repositories
+                .iter()
+                .filter(|repo| !repo.open_pull_requests.is_empty())
+                .count();
+
+            status_lines.push(Line::from(format!(
+                "{} repositories ({} with active PRs)",
+                app.repositories.len(),
+                active_count
+            )));
+        }
+
+        // Last refresh info
+        if let Some(last_refresh) = app.last_refresh {
+            let elapsed = last_refresh.elapsed();
+            let refresh_text = if elapsed.as_secs() < 60 {
+                format!("Last refresh: {}s ago", elapsed.as_secs())
+            } else {
+                format!("Last refresh: {}m ago", elapsed.as_secs() / 60)
+            };
+            status_lines.push(Line::from(refresh_text));
+        }
+
+        // Render the status text
+        let status_paragraph = Paragraph::new(status_lines)
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Center);
+
+        frame.render_widget(status_paragraph, inner_area);
     }
 
     /// Render the main content area
@@ -330,6 +363,11 @@ impl UI {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
+            Cell::from("Workflows").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Cell::from("Status").style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -376,14 +414,15 @@ impl UI {
                     _ => "N/A".to_string(),
                 };
 
-                // Determine status based on PR count and activity
-                let (status_text, status_color) = if !repo.open_pull_requests.is_empty() {
-                    ("Active", Color::Green)
-                } else if repo.latest_workflow.is_some() {
-                    ("Quiet", Color::Yellow)
-                } else {
-                    ("Stale", Color::Red)
-                };
+                // Format workflow status
+                let workflow_status = format!(
+                    "{} {}",
+                    repo.workflow_health.emoji(),
+                    repo.workflow_health.description()
+                );
+
+                // Determine status based on commit activity
+                let status_text = format!("{} {}", repo.status.emoji(), repo.status.description());
 
                 // Apply selection highlighting
                 let row_style = if app.selected_repository == index {
@@ -403,7 +442,9 @@ impl UI {
                     )),
                     Cell::from(last_activity),
                     Cell::from(info),
-                    Cell::from(status_text).style(Style::default().fg(status_color)),
+                    Cell::from(workflow_status)
+                        .style(Style::default().fg(repo.workflow_health.color())),
+                    Cell::from(status_text).style(Style::default().fg(repo.status.color())),
                 ])
                 .style(row_style)
             })
@@ -413,10 +454,11 @@ impl UI {
         let table = Table::new(
             rows,
             [
-                Constraint::Percentage(35), // Repository name
-                Constraint::Percentage(10), // PR count
-                Constraint::Percentage(20), // Last activity
-                Constraint::Percentage(20), // Info
+                Constraint::Percentage(25), // Repository name
+                Constraint::Percentage(8),  // PR count
+                Constraint::Percentage(15), // Last activity
+                Constraint::Percentage(17), // Info
+                Constraint::Percentage(20), // Workflow status
                 Constraint::Percentage(15), // Status
             ],
         )

@@ -252,16 +252,25 @@ impl GitHubClient {
         Ok(None)
     }
 
-    /// Determine the overall status of a repository based on available data
+    /// Fetch recent workflow runs for a repository
+    async fn fetch_workflow_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<crate::models::WorkflowRun>, Box<dyn std::error::Error>> {
+        // For now, return empty vector as octocrab doesn't have direct workflow support
+        // This would need to be implemented with raw HTTP requests to GitHub Actions API
+        // or wait for octocrab to add workflow support
+        
+        // Placeholder implementation - in a real scenario, you'd call:
+        // GET /repos/{owner}/{repo}/actions/runs
+        
+        Ok(Vec::new())
+    }
+
+    /// Determine the overall status of a repository based on last commit time
     fn determine_repository_status(&self, repo: &AppRepository) -> RepositoryStatus {
-        // Simple heuristic for now - can be made more sophisticated
-        if repo.open_pull_requests.len() > 10 {
-            RepositoryStatus::Warning
-        } else if repo.open_pull_requests.len() > 20 {
-            RepositoryStatus::Critical
-        } else {
-            RepositoryStatus::Healthy
-        }
+        RepositoryStatus::from_last_commit(repo.latest_commit_at)
     }
 
     /// Get the authenticated user information for testing
@@ -382,7 +391,20 @@ impl GitHubClient {
             ),
         }
 
-        // Determine overall repository status based on available data
+        // Fetch workflow runs
+        match self.fetch_workflow_runs(&repo.owner, &repo.name).await {
+            Ok(workflows) => {
+                repo.recent_workflows = workflows.clone();
+                repo.workflow_health = crate::models::WorkflowHealth::from_workflow_runs(&workflows);
+                repo.latest_workflow = workflows.first().cloned();
+            }
+            Err(e) => eprintln!(
+                "Failed to fetch workflows for {}/{}: {}",
+                repo.owner, repo.name, e
+            ),
+        }
+
+        // Determine overall repository status based on commit activity
         repo.status = self.determine_repository_status(&repo);
 
         Ok(())
